@@ -11,7 +11,6 @@ from qgis.core import (
 
 import os
 import re
-import traceback
 
 class SalvarEstilosCamadas(QgsProcessingAlgorithm):
     CAMADAS = 'CAMADAS'
@@ -56,9 +55,15 @@ class SalvarEstilosCamadas(QgsProcessingAlgorithm):
         )
 
     def initAlgorithm(self, config=None):
-        self.addParameter(QgsProcessingParameterMultipleLayers(self.CAMADAS, self.tr('Camadas'), layerType=QgsProcessing.TypeMapLayer))
-        self.addParameter(QgsProcessingParameterBoolean(self.OPCAO_GPKG, self.tr('Salvar no .gpkg'), defaultValue=True))
-        self.addParameter(QgsProcessingParameterBoolean(self.OPCAO_QML, self.tr('Exportar .qml'), defaultValue=False))
+        self.addParameter(QgsProcessingParameterMultipleLayers(
+            self.CAMADAS, self.tr('Camadas'), layerType=QgsProcessing.TypeMapLayer
+        ))
+        self.addParameter(QgsProcessingParameterBoolean(
+            self.OPCAO_GPKG, self.tr('Salvar no .gpkg'), defaultValue=True
+        ))
+        self.addParameter(QgsProcessingParameterBoolean(
+            self.OPCAO_QML, self.tr('Exportar .qml'), defaultValue=False
+        ))
         self.addOutput(QgsProcessingOutputString(self.RELATORIO, self.tr('Relatório Final')))
 
     def processAlgorithm(self, parameters, context, feedback):
@@ -66,72 +71,110 @@ class SalvarEstilosCamadas(QgsProcessingAlgorithm):
         salvar_no_gpkg = self.parameterAsBool(parameters, self.OPCAO_GPKG, context)
         salvar_qml = self.parameterAsBool(parameters, self.OPCAO_QML, context)
 
-        relatorio = []
-        resumo_final = {"camadas_ok": 0, "camadas_erro": 0, "total_estilos_salvos": 0}
-        
-        relatorio.append("=== INÍCIO DO LOG DE EXECUÇÃO ===")
+        linhas_log = ["=== INÍCIO DO LOG DE EXECUÇÃO ==="]
+        resumo = {"camadas_ok": 0, "camadas_erro": 0, "total_estilos_salvos": 0}
+        total = len(camadas)
 
         for i, camada in enumerate(camadas, start=1):
-            if feedback.isCanceled(): break
-            
+            if feedback.isCanceled():
+                linhas_log.append("\n[CANCELADO PELO USUÁRIO]")
+                break
+
+            # Progresso granular para evitar aparência de congelamento
+            feedback.setProgress(int((i - 1) / total * 100))
             nome_camada = camada.name()
-            feedback.setProgressText(f"Processando: {nome_camada}")
-            
-            estilos_camada_sucesso = 0
-            estilos_camada_erro = 0
-            
-            try:
-                if not camada.isValid():
-                    raise Exception("Camada inválida ou inacessível.")
+            feedback.setProgressText(f"[{i}/{total}] {nome_camada}")
 
-                style_manager = camada.styleManager()
-                # CORREÇÃO: Utilizar styles() ao invés de listStyles()
-                estilos = style_manager.styles()
-                estilo_original = style_manager.currentStyle()
-                origem = self._extrair_caminho_arquivo(camada)
+            resultado = self._processar_camada(
+                camada, nome_camada, i, total,
+                salvar_no_gpkg, salvar_qml, feedback
+            )
 
-                relatorio.append(f"\nCamada [{i}/{len(camadas)}]: {nome_camada}")
-                relatorio.append(f"  - Estilos detectados: {len(estilos)}")
+            linhas_log.extend(resultado["linhas"])
+            resumo["total_estilos_salvos"] += resultado["estilos_salvos"]
+            if resultado["erro_critico"]:
+                resumo["camadas_erro"] += 1
+            else:
+                resumo["camadas_ok"] += 1
 
-                for nome_estilo in estilos:
-                    try:
-                        style_manager.setCurrentStyle(nome_estilo)
-                        
-                        if salvar_no_gpkg and self._eh_gpkg(camada):
-                            camada.saveStyleToDatabase(nome_estilo, "", True, "")
-                        
-                        if salvar_qml and origem:
-                            caminho_qml = self._montar_caminho_qml(camada, origem, nome_estilo)
-                            camada.saveNamedStyle(caminho_qml)
-                            
-                        estilos_camada_sucesso += 1
-                        resumo_final["total_estilos_salvos"] += 1
-                        
-                    except Exception as e:
-                        estilos_camada_erro += 1
-                        relatorio.append(f"    [ERRO ESTILO] {nome_estilo}: {str(e)}")
+        feedback.setProgress(100)
 
-                # Restaura o estilo original
-                style_manager.setCurrentStyle(estilo_original)
-                relatorio.append(f"  [RESULTADO] Salvos: {estilos_camada_sucesso} | Erros: {estilos_camada_erro}")
-                resumo_final["camadas_ok"] += 1
-
-            except Exception as e:
-                resumo_final["camadas_erro"] += 1
-                relatorio.append(f"  [ERRO CRÍTICO CAMADA]: {str(e)}")
-
-        log_final = "\n".join(relatorio)
         resumo_texto = (
             f"\n\n=== RESUMO FINAL ===\n"
-            f"Camadas processadas com sucesso: {resumo_final['camadas_ok']}\n"
-            f"Camadas com erro crítico: {resumo_final['camadas_erro']}\n"
-            f"Total de estilos salvos (Geral): {resumo_final['total_estilos_salvos']}"
+            f"Camadas processadas com sucesso: {resumo['camadas_ok']}\n"
+            f"Camadas com erro crítico: {resumo['camadas_erro']}\n"
+            f"Total de estilos salvos: {resumo['total_estilos_salvos']}"
         )
-        
-        saida_completa = log_final + resumo_texto
-        feedback.pushInfo(saida_completa)
 
+        saida_completa = "\n".join(linhas_log) + resumo_texto
+        feedback.pushInfo(saida_completa)
         return {self.RELATORIO: saida_completa}
+
+    def _processar_camada(self, camada, nome_camada, idx, total, salvar_no_gpkg, salvar_qml, feedback):
+        """Processa uma camada isoladamente. Nunca levanta exceção para o chamador."""
+        linhas = [f"\nCamada [{idx}/{total}]: {nome_camada}"]
+        estilos_salvos = 0
+        erro_critico = False
+
+        if not camada.isValid():
+            linhas.append("  [ERRO CRÍTICO] Camada inválida ou inacessível.")
+            return {"linhas": linhas, "estilos_salvos": 0, "erro_critico": True}
+
+        try:
+            style_manager = camada.styleManager()
+            estilos = style_manager.styles()
+
+            if not estilos:
+                linhas.append("  [AVISO] Nenhum estilo encontrado.")
+                return {"linhas": linhas, "estilos_salvos": 0, "erro_critico": False}
+
+            estilo_original = style_manager.currentStyle()
+            origem = self._extrair_caminho_arquivo(camada)
+            eh_gpkg = self._eh_gpkg(camada)
+
+            linhas.append(f"  Estilos detectados: {len(estilos)}")
+
+            for nome_estilo in estilos:
+                if feedback.isCanceled():
+                    break
+
+                try:
+                    # setCurrentStyle retorna bool; falha não levanta exceção
+                    if not style_manager.setCurrentStyle(nome_estilo):
+                        linhas.append(f"    [AVISO ESTILO] '{nome_estilo}': setCurrentStyle retornou False.")
+                        continue
+
+                    if salvar_no_gpkg and eh_gpkg:
+                        # saveStyleToDatabase: (name, description, useAsDefault, uiFileContent, msgError)
+                        msg_erro = ""
+                        camada.saveStyleToDatabase(nome_estilo, "", True, "", msg_erro)
+                        if msg_erro:
+                            raise RuntimeError(f"saveStyleToDatabase: {msg_erro}")
+
+                    if salvar_qml and origem:
+                        caminho_qml = self._montar_caminho_qml(camada, origem, nome_estilo)
+                        msg, ok = camada.saveNamedStyle(caminho_qml)
+                        if not ok:
+                            raise RuntimeError(f"saveNamedStyle: {msg}")
+
+                    estilos_salvos += 1
+
+                except Exception as e:
+                    linhas.append(f"    [ERRO ESTILO] '{nome_estilo}': {e}")
+
+            # Restauração garantida via finally seria ideal, mas style_manager
+            # pode ter sido alterado — restaura se o estilo ainda existir.
+            if estilo_original in style_manager.styles():
+                style_manager.setCurrentStyle(estilo_original)
+
+            estilos_com_erro = len(estilos) - estilos_salvos
+            linhas.append(f"  [RESULTADO] Salvos: {estilos_salvos} | Erros: {estilos_com_erro}")
+
+        except Exception as e:
+            erro_critico = True
+            linhas.append(f"  [ERRO CRÍTICO] {e}")
+
+        return {"linhas": linhas, "estilos_salvos": estilos_salvos, "erro_critico": erro_critico}
 
     def _extrair_caminho_arquivo(self, camada):
         source = camada.source().split('|')[0].strip()
@@ -144,7 +187,7 @@ class SalvarEstilosCamadas(QgsProcessingAlgorithm):
         pasta = os.path.dirname(caminho_origem)
         nome_base = os.path.splitext(os.path.basename(caminho_origem))[0]
         estilo_limpo = re.sub(r'[^\w\s-]', '', nome_estilo).replace(' ', '_')
-        
+
         if caminho_origem.lower().endswith('.gpkg'):
             return os.path.join(pasta, f"{nome_base}_{camada.name()}_{estilo_limpo}.qml")
         return os.path.join(pasta, f"{nome_base}_{estilo_limpo}.qml")
