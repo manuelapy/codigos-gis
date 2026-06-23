@@ -15,10 +15,6 @@ Saídas:
 - Resumo por talvegue;
 - Declividade equivalente global;
 - Comprimento total global.
-
-Observação:
-O cálculo dos trechos é mantido apenas internamente, pois é necessário
-para o método de Taylor-Schwarz. A camada de saída de trechos foi removida.
 """
 
 import math
@@ -94,7 +90,7 @@ class DeclividadeTaylorSchwarzAlgorithm(QgsProcessingAlgorithm):
         return 'declividade_taylor_schwarz'
 
     def displayName(self):
-        return self.tr('Declividade Equivalente do Talvegue (Taylor-Schwarz)')
+        return self.tr('Declividade Efetiva (Taylor-Schwarz)')
 
     def group(self):
         return self.tr('Hidrologia')
@@ -104,7 +100,7 @@ class DeclividadeTaylorSchwarzAlgorithm(QgsProcessingAlgorithm):
 
     def shortHelpString(self):
         return self.tr(
-            'Calcula a declividade equivalente do talvegue pelo método '
+            'Calcula a declividade Efetiva do talvegue pelo método '
             'Taylor-Schwarz.\n\n'
             'Saídas geradas:\n'
             '- Pontos de amostragem com altitude extraída do MDE;\n'
