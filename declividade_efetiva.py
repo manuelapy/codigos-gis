@@ -93,10 +93,10 @@ class DeclividadeTaylorSchwarzAlgorithm(QgsProcessingAlgorithm):
         return self.tr('Declividade Efetiva (Taylor-Schwarz)')
 
     def group(self):
-        return self.tr('Hidrologia')
+        return self.tr('Automação QGIS')
 
     def groupId(self):
-        return 'hidrologia_scripts'
+        return 'automacao_qgis'
 
     def shortHelpString(self):
         return self.tr(
